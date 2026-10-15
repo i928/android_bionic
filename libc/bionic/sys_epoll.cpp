@@ -27,6 +27,7 @@
  */
 
 #include <errno.h>
+#include <limits.h>
 #include <sys/epoll.h>
 
 #include "private/SigSetConverter.h"
@@ -80,7 +81,24 @@ int epoll_pwait2_64(int fd, epoll_event* events, int max_events, const timespec*
     kts_ptr = &kts;
   }
 #endif
-  return __epoll_pwait2(fd, events, max_events, kts_ptr, ss, sizeof(*ss));
+  int result = __epoll_pwait2(fd, events, max_events, kts_ptr, ss, sizeof(*ss));
+  if (result != -1 || errno != ENOSYS) return result;
+
+  // Kernels before 5.11 have no epoll_pwait2(): use epoll_pwait() with the
+  // timeout rounded up to whole milliseconds (never sleep less than asked).
+  int timeout_ms = -1;
+  if (timeout) {
+    if (timeout->tv_sec < 0 || timeout->tv_nsec < 0 || timeout->tv_nsec >= 1000000000) {
+      errno = EINVAL;
+      return -1;
+    }
+    if (timeout->tv_sec >= INT_MAX / 1000) {
+      timeout_ms = INT_MAX;
+    } else {
+      timeout_ms = static_cast<int>(timeout->tv_sec * 1000 + (timeout->tv_nsec + 999999) / 1000000);
+    }
+  }
+  return __epoll_pwait(fd, events, max_events, timeout_ms, ss, sizeof(*ss));
 }
 
 int epoll_wait(int fd, struct epoll_event* events, int max_events, int timeout) {
