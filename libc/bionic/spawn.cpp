@@ -114,6 +114,20 @@ struct __posix_spawnattr {
   } sigmask, sigdefault;
 };
 
+// CLOSE_RANGE_CLOEXEC needs Linux 5.11 (or a 5.10 ACK backport); older kernels
+// (crosshatch msm-4.9, lmi 4.19) return ENOSYS or EINVAL. Fall back to marking
+// each possibly open fd, as bionic did before it required close_range().
+static void cloexec_except_stdioe_slow() {
+  constexpr rlim_t kMaxFds = 1024 * 1024;
+  rlimit limit;
+  rlim_t max = kMaxFds;
+  if (!getrlimit(RLIMIT_NOFILE, &limit) && limit.rlim_max < kMaxFds) max = limit.rlim_max;
+  for (int fd = 3; fd < static_cast<int>(max); ++fd) {
+    int fd_flags = fcntl(fd, F_GETFD);
+    if (fd_flags != -1 && !(fd_flags & FD_CLOEXEC)) fcntl(fd, F_SETFD, fd_flags | FD_CLOEXEC);
+  }
+}
+
 static void ApplyAttrs(short flags, const posix_spawnattr_t* attr) {
   // POSIX: "If POSIX_SPAWN_SETSIGDEF is set ... signals in sigdefault ...
   // shall be set to their default actions in the child process."
@@ -154,7 +168,7 @@ static void ApplyAttrs(short flags, const posix_spawnattr_t* attr) {
 
   if ((flags & POSIX_SPAWN_CLOEXEC_DEFAULT) != 0) {
     // mark all open fds except stdin/out/err as close-on-exec
-    if (close_range(3, ~0U, CLOSE_RANGE_CLOEXEC)) _exit(127);
+    if (close_range(3, ~0U, CLOSE_RANGE_CLOEXEC)) cloexec_except_stdioe_slow();
   }
 }
 
